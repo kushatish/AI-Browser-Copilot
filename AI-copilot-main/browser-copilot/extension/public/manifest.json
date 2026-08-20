@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "AI Browser Copilot",
+  "version": "1.0.0",
+  "description": "AI assistant that understands your web pages",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "sidePanel",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "sidebar.html"
+  },
+  "action": {
+    "default_title": "Open AI Copilot"
+  }
+}

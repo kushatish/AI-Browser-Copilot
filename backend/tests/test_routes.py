@@ -138,6 +138,7 @@ class TestAgentEndpoint:
         mock_run.assert_called_once_with(
             "click the login button",
             {"buttons": [{"text": "Login", "selector": "#login"}]},
+            [],
         )
 
     def test_agent_message_action_passed_through(self, client):

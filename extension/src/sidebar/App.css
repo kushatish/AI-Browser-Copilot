@@ -234,3 +234,9 @@ button:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+.privacy-bar, .approval-panel { padding: 10px 12px; border-bottom: 1px solid #333; display: flex; flex-wrap: wrap; gap: 8px; }
+.privacy-bar small { width: 100%; color: #aaa; line-height: 1.4; }
+.privacy-bar button { font-size: 11px; padding: 6px; }
+.approval-panel { background: #332b13; }
+.approval-panel p { width: 100%; overflow-wrap: anywhere; }

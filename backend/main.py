@@ -9,7 +9,8 @@ app = FastAPI(title="Browser Copilot API")
 # Allow requests from Chrome extension
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
+    allow_origin_regex=r"chrome-extension://[a-p]{32}",
     allow_methods=["*"],
     allow_headers=["*"],
 )

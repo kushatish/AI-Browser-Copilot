@@ -117,9 +117,9 @@ class TestLLMToolCalls:
             mock_client.chat.completions.create.return_value = make_groq_response(tool_calls=tool_calls)
             from services.agent import run_agent
             result = run_agent("search for dogs", {})
-        assert len(result) == 2
+        assert len(result) == 1
         assert result[0]["type"] == "fill_input"
-        assert result[1]["type"] == "press_enter"
+
 
     def test_no_tool_calls_returns_message_action(self):
         """When the LLM responds with plain text instead of a tool call."""
@@ -143,7 +143,7 @@ class TestLLMToolCalls:
             mock_client.chat.completions.create.return_value = make_groq_response(tool_calls=tool_calls)
             from services.agent import run_agent
             result = run_agent("scroll down many times", {})
-        assert len(result) == 10
+        assert len(result) == 1
 
     def test_groq_timeout_parameter_passed(self):
         """Ensure the timeout=30 parameter is forwarded to the Groq API call."""

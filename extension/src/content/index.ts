@@ -1,15 +1,20 @@
+export const browserNavigation = {
+  navigate: (url: string) => { window.location.href = url },
+  reload: () => window.location.reload(),
+}
+
 // ─── Selector Helper ────────────────────────────────────────────────────────
 
 export function getUniqueSelector(el: Element): string {
-  if (el.id) return `#${CSS.escape(el.id)}`
-  if (el.getAttribute('name')) return `[name="${el.getAttribute('name')}"]`
+  // Build a full ancestry path; names and IDs can be duplicated.
+  if (el.id && document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) return `#${CSS.escape(el.id)}`
 
   const parts: string[] = []
   let current: Element | null = el
 
-  while (current && current !== document.body && parts.length < 4) {
+  while (current && current !== document.body && parts.length < 100) {
     let selector = current.tagName.toLowerCase()
-    if (current.id) {
+    if (current.id && document.querySelectorAll(`#${CSS.escape(current.id)}`).length === 1) {
       parts.unshift(`#${CSS.escape(current.id)}`)
       break
     }
@@ -23,6 +28,7 @@ export function getUniqueSelector(el: Element): string {
     parts.unshift(selector)
     current = current.parentElement
   }
+  if (current === document.body) parts.unshift('body')
   return parts.join(' > ')
 }
 
@@ -37,11 +43,6 @@ export function extractPageText(): string {
   clone.querySelectorAll('script, style, noscript').forEach((el) => el.remove())
 
   let text = (clone.body?.textContent || '').replace(/\s+/g, ' ').trim()
-
-  // For very minimal pages (e.g. Google homepage), use full body text
-  if (text.length < 100) {
-    text = (document.body?.textContent || '').replace(/\s+/g, ' ').trim()
-  }
 
   const parts = [`Page: ${title}`]
   if (metaDesc) parts.push(`Description: ${metaDesc}`)
@@ -102,12 +103,6 @@ export function executeAction(action: {
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
     el.click()
-    // Fallback: if it's a submit button, also submit the parent form
-    const type = el.getAttribute('type')
-    if (type === 'submit' || el.tagName === 'BUTTON') {
-      const form = el.closest('form')
-      if (form) form.requestSubmit()
-    }
   } else if (action.type === 'fill_input') {
     const el = document.querySelector(action.selector!) as HTMLInputElement | HTMLTextAreaElement
     if (!el) throw new Error(`Element not found: ${action.selector}`)
@@ -137,7 +132,9 @@ export function executeAction(action: {
     if (form) form.requestSubmit()
   } else if (action.type === 'navigate_to_url') {
     if (!action.url) throw new Error('No URL provided')
-    window.location.href = action.url
+    const destination = new URL(action.url, window.location.href)
+    if (!['http:', 'https:'].includes(destination.protocol)) throw new Error('Only HTTP(S) navigation is allowed')
+    browserNavigation.navigate(destination.href)
   } else if (action.type === 'select_option') {
     const el = document.querySelector(action.selector!) as HTMLSelectElement
     if (!el) throw new Error(`Element not found: ${action.selector}`)
@@ -153,7 +150,7 @@ export function executeAction(action: {
   } else if (action.type === 'go_forward') {
     window.history.forward()
   } else if (action.type === 'reload_page') {
-    window.location.reload()
+    browserNavigation.reload()
   } else if (action.type === 'scroll_to_element') {
     const el = document.querySelector(action.selector!)
     if (!el) throw new Error(`Element not found: ${action.selector}`)
@@ -161,9 +158,11 @@ export function executeAction(action: {
   } else if (action.type === 'copy_text') {
     const el = document.querySelector(action.selector!)
     if (!el) throw new Error(`Element not found: ${action.selector}`)
-    navigator.clipboard.writeText((el as HTMLElement).innerText || el.textContent || '')
+    return navigator.clipboard.writeText((el as HTMLElement).innerText || el.textContent || '')
   } else if (action.type === 'scroll_page') {
     window.scrollBy({ top: action.direction === 'down' ? 600 : -600, behavior: 'smooth' })
+  } else {
+    throw new Error(`Unsupported action: ${action.type}`)
   }
 }
 
@@ -171,12 +170,9 @@ export function executeAction(action: {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'EXECUTE_ACTION') {
-    try {
-      executeAction(message.action)
-      sendResponse({ success: true })
-    } catch (e) {
-      sendResponse({ success: false, error: String(e) })
-    }
+    Promise.resolve().then(() => executeAction(message.action))
+      .then(() => sendResponse({ success: true }))
+      .catch((e) => sendResponse({ success: false, error: String(e) }))
   }
 
   // Sidebar requests fresh page content directly from this tab
@@ -185,7 +181,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       content: extractPageText(),
       url: window.location.href,
       title: document.title,
-      domStructure: extractInteractiveElements(),
+      domStructure: { ...extractInteractiveElements(), url: window.location.href, title: document.title, pageText: extractPageText(), sensitive: !!document.querySelector('input[type="password"]') },
     })
   }
 
@@ -200,6 +196,7 @@ function sendPageData() {
 
   chrome.runtime.sendMessage({
     type: 'PAGE_CONTENT',
+    sensitive: !!document.querySelector('input[type="password"]'),
     content,
     url: window.location.href,
     title: document.title,

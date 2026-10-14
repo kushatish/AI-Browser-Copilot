@@ -26,21 +26,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Respond immediately - content script doesn't use this response
     sendResponse({ success: true })
 
-    // Fire-and-forget: send to backend with a 5s timeout
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 5000)
-    fetch(`${BACKEND_URL}/remember`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: message.url,
-        title: message.title,
-        content: safeContent,
-      }),
-      signal: controller.signal,
+    // Memory is opt-in per origin and disabled in incognito/password pages.
+    chrome.storage.local.get(['memoryOrigins'], ({ memoryOrigins = [] }) => {
+      let origin: string
+      try { origin = new URL(message.url).origin } catch { return }
+      if (_sender.tab?.incognito || !memoryOrigins.includes(origin) || message.sensitive) return
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      fetch(`${BACKEND_URL}/remember`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: message.url, title: message.title, content: safeContent }),
+        signal: controller.signal,
+      }).catch(() => {}).finally(() => clearTimeout(timeoutId))
     })
-      .catch(() => { /* Backend might not be running - silently ignore */ })
-      .finally(() => clearTimeout(timeoutId))
 
     return false // sendResponse already called synchronously
   }

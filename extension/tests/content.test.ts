@@ -16,6 +16,7 @@ import {
   extractPageText,
   extractInteractiveElements,
   executeAction,
+  browserNavigation,
 } from '../src/content/index'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ describe('getUniqueSelector', () => {
 
   it('returns [name=...] when element has a name attribute and no id', () => {
     const el = appendEl('input', { name: 'email', type: 'email' })
-    expect(getUniqueSelector(el)).toBe('[name="email"]')
+    expect(document.querySelector(getUniqueSelector(el))).toBe(el)
   })
 
   it('returns bare tag when element is unique in parent', () => {
@@ -322,8 +323,10 @@ describe('executeAction', () => {
     })
 
     it('sets window.location.href', () => {
+      const navigate = vi.spyOn(browserNavigation, 'navigate').mockImplementation(() => {})
       executeAction({ type: 'navigate_to_url', url: 'https://example.com' })
-      expect(window.location.href).toContain('example.com')
+      expect(navigate).toHaveBeenCalledWith('https://example.com/')
+      navigate.mockRestore()
     })
   })
 
@@ -377,7 +380,7 @@ describe('executeAction', () => {
 
   describe('reload_page', () => {
     it('calls window.location.reload()', () => {
-      const spy = vi.spyOn(window.location, 'reload').mockImplementation(() => {})
+      const spy = vi.spyOn(browserNavigation, 'reload').mockImplementation(() => {})
       executeAction({ type: 'reload_page' })
       expect(spy).toHaveBeenCalled()
     })

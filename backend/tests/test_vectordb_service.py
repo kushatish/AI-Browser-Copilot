@@ -8,6 +8,7 @@ Covers:
 - search_pages caps n_results to actual collection count
 - search_pages truncates long document content to 4000 chars
 """
+import hashlib
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -28,8 +29,9 @@ class TestStorePage:
                 "url": "https://example.com",
                 "title": "Example Title",
                 "visited_at": 1_700_000_000,
+                "chunk": 0,
             }],
-            ids=["https://example.com"],
+            ids=[hashlib.sha256(b"https://example.com").hexdigest() + ":0"],
         )
 
     def test_url_used_as_id_for_deduplication(self):
@@ -42,7 +44,7 @@ class TestStorePage:
 
         assert mock_col.upsert.call_count == 2
         ids_used = [c.kwargs["ids"] for c in mock_col.upsert.call_args_list]
-        assert ids_used[0] == ids_used[1] == ["https://same.com"]
+        assert ids_used[0] == ids_used[1] == [hashlib.sha256(b"https://same.com").hexdigest() + ":0"]
 
     def test_timestamp_recorded(self):
         with patch("services.vectordb.collection"), \

@@ -17,6 +17,10 @@ function App() {
   const [pageTitle, setPageTitle] = useState('')
   const [backendError, setBackendError] = useState(false)
   const [mode, setMode] = useState<Mode>('ask')
+  const cancelled = useRef(false)
+  const approval = useRef<((accepted: boolean) => void) | null>(null)
+  const [pendingAction, setPendingAction] = useState('')
+  const [memoryEnabled, setMemoryEnabled] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -24,7 +28,7 @@ function App() {
       if (result.pageTitle) setPageTitle(result.pageTitle)
     })
     fetch(`${BACKEND_URL}/health`)
-      .then(() => setBackendError(false))
+      .then((response) => setBackendError(!response.ok))
       .catch(() => setBackendError(true))
   }, [])
 
@@ -44,6 +48,10 @@ function App() {
     try {
       const data = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTENT' })
       if (data?.title) setPageTitle(data.title)
+      if (data?.url) {
+        const { memoryOrigins = [] } = await chrome.storage.local.get('memoryOrigins')
+        setMemoryEnabled(!tab.incognito && memoryOrigins.includes(new URL(data.url).origin))
+      }
       return data
     } catch {
       // Content script not loaded on this page (e.g. chrome:// pages)
@@ -90,59 +98,103 @@ function App() {
   // ── Act mode ────────────────────────────────────────────────────────────────
 
   const handleAct = async (command: string) => {
-    try {
-      const pageData = await getFreshPageData()
-
-      const response = await fetch(`${BACKEND_URL}/agent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, dom_structure: pageData?.domStructure || {} }),
-        signal: AbortSignal.timeout(30000),
-      })
-
-      if (!response.ok) throw new Error('Backend error')
-      const data = await response.json()
-      const actions: Array<{ type: string; description?: string; text?: string; selector?: string; value?: string; direction?: string }> = data.actions
-
-      // If model returned a plain text explanation
-      if (actions.length === 1 && actions[0].type === 'message') {
-        addMessage(actions[0].text || 'Could not complete the action.', 'assistant')
-        return
+    cancelled.current = false
+    const history: Array<Record<string, unknown>> = []
+    const [target] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!target?.id) { addMessage('No active tab available.', 'assistant'); return }
+    const observe = async () => {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (cancelled.current) throw new Error('Cancelled')
+        try {
+          const tab = await chrome.tabs.get(target.id!)
+          if (tab.status === 'complete') {
+            const data = await chrome.tabs.sendMessage(target.id!, { type: 'GET_PAGE_CONTENT' })
+            if (data) return data
+          }
+        } catch { /* Content script may be loading after navigation. */ }
+        await new Promise((resolve) => setTimeout(resolve, 500))
       }
-
-      // Show planned steps
-      const plan = actions.map((a, i) => `${i + 1}. ${a.description || a.type}`).join('\n')
-      addMessage(`Executing ${actions.length} step(s):\n${plan}`, 'assistant', true)
-
-      // Get active tab and execute actions one by one
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (!tab.id) throw new Error('No active tab found')
-
-      const results: string[] = []
-      for (const action of actions) {
-        if (action.type === 'message') continue
-        const result = await chrome.tabs.sendMessage(tab.id, { type: 'EXECUTE_ACTION', action })
-        if (result?.success === false) {
-          const errMsg = result.error || 'Unknown error'
-          results.push(`Step failed: ${action.description || action.type} — ${errMsg}`)
-          addMessage(results.join('\n'), 'assistant', true)
+      throw new Error('Could not read the page. It may be restricted or still loading.')
+    }
+    try {
+      for (let step = 0; step < 12; step++) {
+        const before = await observe()
+        const response = await fetch(`${BACKEND_URL}/agent`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command, dom_structure: before.domStructure, history }),
+          signal: AbortSignal.timeout(30000),
+        })
+        if (!response.ok) throw new Error(`Planner failed (${response.status})`)
+        const { actions } = await response.json()
+        if (cancelled.current) throw new Error('Cancelled')
+        const action = actions?.[0]
+        if (!action) throw new Error('Planner returned no valid action.')
+        if (action.type === 'message') {
+          addMessage(action.text || 'The planner could not verify completion.', 'assistant')
           return
         }
+        // Every action is reviewable, including consequences the model may miss.
+        setPendingAction(`${action.description || action.type}${action.value ? `: ${action.value}` : ''}${action.url ? ` → ${action.url}` : ''}`)
+        const accepted = await new Promise<boolean>((resolve) => { approval.current = resolve })
+        approval.current = null
+        setPendingAction('')
+        if (!accepted || cancelled.current) throw new Error('Cancelled')
+        const current = await observe()
+        if (current.url !== before.url) throw new Error('The page changed during approval. Please restart the command.')
+        const result = await chrome.tabs.sendMessage(target.id!, { type: 'EXECUTE_ACTION', action })
+        if (!result?.success) throw new Error(result?.error || 'The page did not acknowledge the action.')
         await delayForAction(action.type)
+        const after = await observe()
+        history.push({ action, before_url: before.url, after_url: after.url, page_changed: before.content !== after.content })
+        addMessage(`Step ${step + 1}: ${action.description || action.type}. Rechecking the page…`, 'assistant', true)
+        // Deterministic single-step navigation commands need no further planning.
+        if (['go_back', 'go_forward', 'reload_page'].includes(action.type) && history.length === 1) {
+          addMessage(`Page observed after action: ${after.title || after.url}`, 'assistant', true)
+          return
+        }
       }
-
-      addMessage('Done.', 'assistant', true)
-      setBackendError(false)
-    } catch (err) {
-      const isBackendErr = err instanceof TypeError || (err instanceof Error && err.name !== 'AbortError')
-      if (isBackendErr) setBackendError(true)
-      addMessage(
-        isBackendErr
-          ? 'Error executing actions. Make sure the backend is running.'
-          : 'Action timed out. The page may be slow.',
-        'assistant'
-      )
+      addMessage('Stopped at the 12-step limit. Completion has not been verified.', 'assistant')
+    } catch (error) {
+      addMessage(error instanceof Error ? error.message : String(error), 'assistant')
+    } finally {
+      approval.current = null
+      setPendingAction('')
     }
+  }
+
+  const toggleMemory = async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (tab?.incognito) throw new Error('Memory is disabled in incognito.')
+      const data = await getFreshPageData()
+      if (!data?.url) throw new Error('This page is unavailable.')
+      if (data.domStructure?.sensitive) throw new Error('Memory is disabled on pages containing password fields.')
+      const origin = new URL(data.url).origin
+      const { memoryOrigins = [] } = await chrome.storage.local.get('memoryOrigins')
+      const enabling = !memoryOrigins.includes(origin)
+      await chrome.storage.local.set({ memoryOrigins: enabling ? [...memoryOrigins, origin] : memoryOrigins.filter((o: string) => o !== origin) })
+      setMemoryEnabled(enabling)
+      if (enabling) {
+        const response = await fetch(`${BACKEND_URL}/remember`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: data.url, title: data.title, content: data.content }),
+          signal: AbortSignal.timeout(30000),
+        })
+        if (!response.ok) throw new Error('Site enabled, but saving this page failed.')
+      }
+      addMessage(enabling ? 'Memory enabled for this site. Page content will be stored locally; relevant passages are sent to Groq when you ask questions.' : 'Memory disabled for this site. Previously saved pages remain until deleted.', 'assistant')
+    } catch (error) { addMessage(String(error), 'assistant') }
+  }
+
+  const clearMemory = async () => {
+    if (!window.confirm('Delete all saved browsing memory?')) return
+    try {
+      await chrome.storage.local.set({ memoryOrigins: [] })
+      setMemoryEnabled(false)
+      const response = await fetch(`${BACKEND_URL}/memory`, { method: 'DELETE', signal: AbortSignal.timeout(30000) })
+      if (!response.ok) throw new Error('Could not delete saved memory.')
+      addMessage('Saved memory deleted. Site memory permissions reset.', 'assistant')
+    } catch (error) { addMessage(String(error), 'assistant') }
   }
 
   // ── Send ─────────────────────────────────────────────────────────────────────
@@ -194,6 +246,17 @@ function App() {
         {pageTitle && <span className="page-label-inline">{pageTitle}</span>}
       </div>
 
+      <div className="privacy-bar">
+        <button onClick={toggleMemory} disabled={loading}>{memoryEnabled ? 'Disable site memory' : 'Enable site memory'}</button>
+        <button onClick={clearMemory} disabled={loading}>Delete memory</button>
+        <small>Ask sends current page text to Groq. Memory is opt-in.</small>
+      </div>
+      {pendingAction && <div className="approval-panel">
+        <p>Approve next action: {pendingAction}</p>
+        <button onClick={() => approval.current?.(true)}>Approve</button>
+        <button onClick={() => { cancelled.current = true; approval.current?.(false) }}>Cancel</button>
+      </div>}
+      {loading && <button onClick={() => { cancelled.current = true; approval.current?.(false) }}>Stop after current action</button>}
       <div className="messages">
         {messages.length === 0 && (
           <div className="empty">

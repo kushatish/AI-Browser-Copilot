@@ -45,3 +45,9 @@ const chromeMock = {
 beforeEach(() => {
   vi.clearAllMocks()
 })
+
+// Browser APIs absent from jsdom. Hex escapes support punctuation and leading digits.
+Object.defineProperty(globalThis, 'CSS', { configurable: true, value: {
+  escape: (value: string) => Array.from(value).map((character, index) => /[a-zA-Z_-]/.test(character) || (index > 0 && /[0-9]/.test(character)) ? character : `\\${character.codePointAt(0)!.toString(16)} `).join(''),
+} })
+HTMLElement.prototype.scrollIntoView = vi.fn()

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from services.gemini import ask_gemini
 from services.vectordb import search_pages
 
@@ -7,8 +7,8 @@ router = APIRouter()
 
 
 class AskRequest(BaseModel):
-    question: str
-    page_content: str
+    question: str = Field(min_length=1, max_length=2000)
+    page_content: str = Field(max_length=50000)
     page_url: str = ""
     page_title: str = ""
 
